@@ -55,12 +55,12 @@ void MFRC522_ClearBitMask(uint8_t reg, uint8_t mask) {
 // --- Funciones de Control del Módulo ---
 
 void MFRC522_Reset(void) {
-  // Hard Reset primero
-  HAL_GPIO_WritePin(RC522_RST_PORT, RC522_RST_PIN, GPIO_PIN_SET);
+  // Hard Reset
+  // RST pin: High = Reset/PowerDown, Low = Normal Operation
+  HAL_GPIO_WritePin(RC522_RST_PORT, RC522_RST_PIN, GPIO_PIN_SET); // Reset
   HAL_Delay(10);
-  HAL_GPIO_WritePin(RC522_RST_PORT, RC522_RST_PIN, GPIO_PIN_RESET);
-  HAL_Delay(10);
-  HAL_GPIO_WritePin(RC522_RST_PORT, RC522_RST_PIN, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(RC522_RST_PORT, RC522_RST_PIN,
+                    GPIO_PIN_RESET); // Release Reset (Work)
   HAL_Delay(50);
 
   // Soft Reset
@@ -139,7 +139,7 @@ uint8_t MFRC522_ToCard(uint8_t command, uint8_t *sendData, uint8_t sendLen,
   }
 
   // Esperar a que termine
-  i = 2000;
+  i = 25000;
   do {
     n = MFRC522_ReadRegister(MFRC522_REG_COMM_IRQ);
     i--;

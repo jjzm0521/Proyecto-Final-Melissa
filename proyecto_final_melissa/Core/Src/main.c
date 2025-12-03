@@ -26,6 +26,7 @@
 #include "rc522.h"
 #include "servo_lock.h"
 #include "state_machine.h"
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -111,19 +112,16 @@ int main(void) {
   MX_TIM3_Init();
   MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
-  // 0. Initialize RC522
-  MFRC522_Init();
-
   // 1. Initialize LCD
   LiquidCrystal_I2C_init(&lcd, &hi2c1, 0x23, 20, 4);
   LiquidCrystal_I2C_clear(&lcd);
+  LiquidCrystal_I2C_backlight(&lcd);
+  LiquidCrystal_I2C_setCursor(&lcd, 0, 0);
   LiquidCrystal_I2C_print(&lcd, "Iniciando...");
   HAL_Delay(1000);
 
   // 2. Initialize Keypad
-  // Configured based on User Request:
-  // Rows (Inputs/EXTI): PC0 - PC3
-  // Cols (Outputs): PC4 - PC7
+  // Rows (Inputs)
   keypad.RowPorts[0] = GPIOC;
   keypad.RowPins[0] = GPIO_PIN_0;
   keypad.RowPorts[1] = GPIOC;
@@ -133,6 +131,7 @@ int main(void) {
   keypad.RowPorts[3] = GPIOC;
   keypad.RowPins[3] = GPIO_PIN_3;
 
+  // Columns (Outputs)
   keypad.ColPorts[0] = GPIOC;
   keypad.ColPins[0] = GPIO_PIN_4;
   keypad.ColPorts[1] = GPIOC;
@@ -141,18 +140,21 @@ int main(void) {
   keypad.ColPins[2] = GPIO_PIN_6;
   keypad.ColPorts[3] = GPIOC;
   keypad.ColPins[3] = GPIO_PIN_7;
+
   Keypad_Init(&keypad, &htim11);
 
   // 3. Initialize Servo
-  // TODO: Configure a Timer for PWM (e.g., TIM3) and update handle here
-  Servo_Init(&servo, &htim3, TIM_CHANNEL_1);
+  Servo_Init(&servo, &htim3, TIM_CHANNEL_4);
 
-  // 4. Initialize State Machine
+  // 4. Initialize RC522 (SPI) - Potential Hang Point
+  LiquidCrystal_I2C_setCursor(&lcd, 0, 1);
+  LiquidCrystal_I2C_print(&lcd, "Init RC522...");
+  MFRC522_Init();
+  LiquidCrystal_I2C_print(&lcd, " OK");
+  HAL_Delay(500);
+
+  // 5. Initialize State Machine
   SM_Init(&lcd, &keypad, &servo, &huart2);
-
-  // 5. Start UART Receive Interrupt
-  HAL_UART_Receive_IT(&huart2, &rxChar, 1);
-  /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
@@ -162,6 +164,7 @@ int main(void) {
     /* USER CODE BEGIN 3 */
     SM_Run();
   }
+
   /* USER CODE END 3 */
 }
 
@@ -261,7 +264,7 @@ static void MX_SPI1_Init(void) {
   hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi1.Init.NSS = SPI_NSS_SOFT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_32;
   hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -317,7 +320,7 @@ static void MX_TIM3_Init(void) {
   sConfigOC.Pulse = 0;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_1) != HAL_OK) {
+  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_4) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN TIM3_Init 2 */
@@ -471,7 +474,8 @@ void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
  */
 void Error_Handler(void) {
   /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
+  /* User can add his own implementation to report the HAL error return state
+   */
   __disable_irq();
   while (1) {
   }

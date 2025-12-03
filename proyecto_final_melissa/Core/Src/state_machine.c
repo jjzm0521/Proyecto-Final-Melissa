@@ -15,10 +15,6 @@
 #define REED_SW_PORT GPIOB
 #define REED_SW_PIN GPIO_PIN_0
 
-// Flash Configuration (Sector 7 - STM32F411)
-#define FLASH_USER_START_ADDR 0x08060000
-#define FLASH_SECTOR FLASH_SECTOR_7
-
 // State Variables
 static SystemState_t currentState = STATE_IDLE;
 static char currentCode[CODE_LENGTH + 1];
@@ -46,8 +42,6 @@ static void SM_Clear(void);
 static void SM_SetCursor(uint8_t col, uint8_t row);
 static void SM_ProcessUART(char key);
 static bool SM_IsDoorOpen(void);
-static void Flash_SavePassword(const char *pwd);
-static void Flash_LoadPassword(char *buffer);
 
 void SM_Init(LiquidCrystal_I2C_t *lcd, Keypad_t *keypad, Servo_t *servo,
              UART_HandleTypeDef *huart) {
@@ -65,7 +59,7 @@ void SM_Init(LiquidCrystal_I2C_t *lcd, Keypad_t *keypad, Servo_t *servo,
   if (uartHandle != NULL) {
     char *menu = "\r\n--- Menu Smart Lock ---\r\n"
                  "Teclas: 0-9, A-D\r\n"
-                 "Cmds: 'U'Abrir, 'L'Cerrar\r\n"
+                 "Cmds: 'U'Abrir, 'C'Cerrar\r\n"
                  "-----------------------\r\n";
     HAL_UART_Transmit(uartHandle, (uint8_t *)menu, strlen(menu), 1000);
   }
@@ -200,7 +194,8 @@ void SM_HandleKey(char key) {
     if (codeIndex >= CODE_LENGTH) {
       currentCode[CODE_LENGTH] = '\0';
       strcpy(savedPassword, currentCode);
-      Flash_SavePassword(savedPassword); // Save to Flash
+      // Flash_SavePassword(savedPassword); // Save to Flash
+      // ************************************** Revisar, no agente
       TransitionTo(STATE_CHANGE_PWD_CONFIRM);
     }
     break;
@@ -315,7 +310,7 @@ bool SM_CheckCard(void) {
       char uidStr[32];
       sprintf(uidStr, "UID: %02X%02X%02X%02X", str[0], str[1], str[2], str[3]);
       SM_Print(uidStr);
-      HAL_Delay(1000);
+      HAL_Delay(3000);
 
       // Verify UID
       bool authorized = true;
@@ -374,61 +369,39 @@ void SM_HandleUART(char key) {
 }
 
 static void SM_ProcessUART(char key) {
+  // 1. Command 'U': Open
   if (key == 'U') {
     TransitionTo(STATE_ACCESS_GRANTED);
-  } else if (key == 'L') {
-    TransitionTo(STATE_IDLE); // Force Lock
-  } else if (key == 'C') {
-    TransitionTo(STATE_IDLE); // Manual Close
-  } else {
+    return;
+  }
+
+  // 2. Command 'C': Close (Replacing 'L')
+  if (key == 'C') {
+    TransitionTo(STATE_IDLE);
+    return;
+  }
+
+  // 3. Filter: Only allow keys present in KEYMAP
+  // KEYMAP: 0-9, A, B, C, D, *, #
+  // Note: 'C' is already handled above as a command.
+  bool isValid = false;
+  if (key >= '0' && key <= '9')
+    isValid = true;
+  else if (key == 'A' || key == 'B' || key == 'D')
+    isValid = true;
+  else if (key == '*' || key == '#')
+    isValid = true;
+
+  if (isValid) {
     SM_HandleKey(key);
   }
+  // Else: Ignore key
 }
 
 static bool SM_IsDoorOpen(void) {
   // If pin is High (Pull-up), switch is open -> Door Open
   // If pin is Low (Grounded), switch is closed -> Door Closed
   return (HAL_GPIO_ReadPin(REED_SW_PORT, REED_SW_PIN) == GPIO_PIN_SET);
-}
 
-static void Flash_SavePassword(const char *pwd) {
-  HAL_FLASH_Unlock();
 
-  // 1. Erase Sector
-  FLASH_EraseInitTypeDef EraseInitStruct;
-  uint32_t SectorError;
-
-  EraseInitStruct.TypeErase = FLASH_TYPEERASE_SECTORS;
-  EraseInitStruct.VoltageRange = FLASH_VOLTAGE_RANGE_3;
-  EraseInitStruct.Sector = FLASH_SECTOR;
-  EraseInitStruct.NbSectors = 1;
-
-  if (HAL_FLASHEx_Erase(&EraseInitStruct, &SectorError) == HAL_OK) {
-    // 2. Write Password (byte by byte)
-    // We write the string + null terminator
-    int len = strlen(pwd) + 1;
-    for (int i = 0; i < len; i++) {
-      HAL_FLASH_Program(FLASH_TYPEPROGRAM_BYTE, FLASH_USER_START_ADDR + i,
-                        pwd[i]);
-    }
-  }
-
-  HAL_FLASH_Lock();
-}
-
-static void Flash_LoadPassword(char *buffer) {
-  // Read from Flash
-  // If first byte is 0xFF, it means empty/erased -> Load Default
-  uint8_t firstByte = *(__IO uint8_t *)FLASH_USER_START_ADDR;
-
-  if (firstByte == 0xFF) {
-    strcpy(buffer, "1234"); // Default
-  } else {
-    // Copy from Flash to buffer
-    // Max length check to be safe
-    for (int i = 0; i < CODE_LENGTH; i++) {
-      buffer[i] = *(__IO uint8_t *)(FLASH_USER_START_ADDR + i);
-    }
-    buffer[CODE_LENGTH] = '\0';
-  }
 }
