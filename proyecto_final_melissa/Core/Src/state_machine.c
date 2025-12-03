@@ -10,6 +10,15 @@
 #define AUTO_CLOSE_DELAY 5000 // ms
 #define MAX_LEN 16
 
+// Reed Switch Configuration (GPIOB Pin 0)
+// NOTE: Configure this pin as Input with Pull-Up in CubeMX
+#define REED_SW_PORT GPIOB
+#define REED_SW_PIN GPIO_PIN_0
+
+// Flash Configuration (Sector 7 - STM32F411)
+#define FLASH_USER_START_ADDR 0x08060000
+#define FLASH_SECTOR FLASH_SECTOR_7
+
 // State Variables
 static SystemState_t currentState = STATE_IDLE;
 static char currentCode[CODE_LENGTH + 1];
@@ -17,6 +26,8 @@ static uint8_t codeIndex = 0;
 static char savedPassword[CODE_LENGTH + 1] = "1234"; // Contraseña por defecto
 static uint32_t stateEntryTime = 0;
 static uint8_t failedAttempts = 0;
+static uint32_t doorOpenTime = 0; // Timer for door open alert
+static bool alertShown = false;
 static const uint8_t AUTHORIZED_UID[4] = {0xDE, 0xAD, 0xBE,
                                           0xEF}; // Change as needed
 
@@ -34,6 +45,9 @@ static void SM_Print(const char *str);
 static void SM_Clear(void);
 static void SM_SetCursor(uint8_t col, uint8_t row);
 static void SM_ProcessUART(char key);
+static bool SM_IsDoorOpen(void);
+static void Flash_SavePassword(const char *pwd);
+static void Flash_LoadPassword(char *buffer);
 
 void SM_Init(LiquidCrystal_I2C_t *lcd, Keypad_t *keypad, Servo_t *servo,
              UART_HandleTypeDef *huart) {
@@ -85,8 +99,30 @@ void SM_Run(void) {
 
   switch (currentState) {
   case STATE_ACCESS_GRANTED:
-    if (elapsed > AUTO_CLOSE_DELAY) {
-      TransitionTo(STATE_IDLE);
+    // Logic with Reed Switch
+    if (SM_IsDoorOpen()) {
+      // Door is physically OPEN
+      // Reset the entry time so we don't close immediately after it shuts
+      // But we want to track how long it's been open for the alert
+      if (doorOpenTime == 0) {
+        doorOpenTime = HAL_GetTick();
+      }
+
+      // Check if open too long (e.g., 15 seconds)
+      if ((HAL_GetTick() - doorOpenTime > 15000) && !alertShown) {
+        SM_Clear();
+        SM_Print("PUERTA ABIERTA!");
+        alertShown = true;
+      }
+    } else {
+      // Door is physically CLOSED
+      doorOpenTime = 0; // Reset open timer
+      alertShown = false;
+
+      // Wait a small delay to ensure it's fully closed before locking
+      if (elapsed > 1000) {
+        TransitionTo(STATE_IDLE);
+      }
     }
     break;
 
@@ -164,6 +200,7 @@ void SM_HandleKey(char key) {
     if (codeIndex >= CODE_LENGTH) {
       currentCode[CODE_LENGTH] = '\0';
       strcpy(savedPassword, currentCode);
+      Flash_SavePassword(savedPassword); // Save to Flash
       TransitionTo(STATE_CHANGE_PWD_CONFIRM);
     }
     break;
@@ -340,7 +377,58 @@ static void SM_ProcessUART(char key) {
   if (key == 'U') {
     TransitionTo(STATE_ACCESS_GRANTED);
   } else if (key == 'L') {
+    TransitionTo(STATE_IDLE); // Force Lock
+  } else if (key == 'C') {
+    TransitionTo(STATE_IDLE); // Manual Close
   } else {
     SM_HandleKey(key);
+  }
+}
+
+static bool SM_IsDoorOpen(void) {
+  // If pin is High (Pull-up), switch is open -> Door Open
+  // If pin is Low (Grounded), switch is closed -> Door Closed
+  return (HAL_GPIO_ReadPin(REED_SW_PORT, REED_SW_PIN) == GPIO_PIN_SET);
+}
+
+static void Flash_SavePassword(const char *pwd) {
+  HAL_FLASH_Unlock();
+
+  // 1. Erase Sector
+  FLASH_EraseInitTypeDef EraseInitStruct;
+  uint32_t SectorError;
+
+  EraseInitStruct.TypeErase = FLASH_TYPEERASE_SECTORS;
+  EraseInitStruct.VoltageRange = FLASH_VOLTAGE_RANGE_3;
+  EraseInitStruct.Sector = FLASH_SECTOR;
+  EraseInitStruct.NbSectors = 1;
+
+  if (HAL_FLASHEx_Erase(&EraseInitStruct, &SectorError) == HAL_OK) {
+    // 2. Write Password (byte by byte)
+    // We write the string + null terminator
+    int len = strlen(pwd) + 1;
+    for (int i = 0; i < len; i++) {
+      HAL_FLASH_Program(FLASH_TYPEPROGRAM_BYTE, FLASH_USER_START_ADDR + i,
+                        pwd[i]);
+    }
+  }
+
+  HAL_FLASH_Lock();
+}
+
+static void Flash_LoadPassword(char *buffer) {
+  // Read from Flash
+  // If first byte is 0xFF, it means empty/erased -> Load Default
+  uint8_t firstByte = *(__IO uint8_t *)FLASH_USER_START_ADDR;
+
+  if (firstByte == 0xFF) {
+    strcpy(buffer, "1234"); // Default
+  } else {
+    // Copy from Flash to buffer
+    // Max length check to be safe
+    for (int i = 0; i < CODE_LENGTH; i++) {
+      buffer[i] = *(__IO uint8_t *)(FLASH_USER_START_ADDR + i);
+    }
+    buffer[CODE_LENGTH] = '\0';
   }
 }
