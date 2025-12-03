@@ -1,0 +1,195 @@
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>Documentación Smart Lock</title>
+<style>
+    body { font-family: sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px; }
+    h1, h2, h3 { color: #333; }
+    code { background-color: #f4f4f4; padding: 2px 5px; border-radius: 3px; }
+    pre { background-color: #f4f4f4; padding: 10px; border-radius: 5px; overflow-x: auto; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+    th { background-color: #f2f2f2; }
+    .mermaid { text-align: center; margin: 20px 0; }
+</style>
+<script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+    mermaid.initialize({ startOnLoad: true });
+</script>
+</head>
+<body>
+<h1>Documentación del Sistema Smart Lock (Cerradura Inteligente)</h1>
+<p>Este documento proporciona una explicación detallada del código fuente, la arquitectura del sistema y los componentes de hardware utilizados en el proyecto de Cerradura Inteligente con STM32.</p>
+<h2>1. Arquitectura del Sistema</h2>
+<p>El sistema se basa en una arquitectura de <strong>Máquina de Estados Finitos (FSM)</strong> que coordina las interacciones entre los periféricos de entrada (Teclado, RFID, UART) y salida (LCD, Servo, UART).</p>
+<h3>Diagrama de Componentes</h3>
+<div class="mermaid">graph TD
+    User((Usuario))
+
+    subgraph STM32 [&quot;Microcontrolador STM32F411&quot;]
+        SM[&quot;Máquina de Estados (state_machine.c)&quot;]
+
+        subgraph Drivers
+            Keypad[&quot;Driver Teclado (keypad.c)&quot;]
+            RFID[&quot;Driver RFID RC522 (rc522.c)&quot;]
+            Servo[&quot;Driver Servo (servo_lock.c)&quot;]
+            LCD[&quot;Driver LCD I2C&quot;]
+            UART[&quot;Driver UART&quot;]
+        end
+    end
+
+    User --&gt;|Presiona Teclas| Keypad
+    User --&gt;|Acerca Tarjeta| RFID
+    User --&gt;|Comandos Serial| UART
+
+    Keypad --&gt;|Interrupción/Timer| SM
+    RFID --&gt;|SPI| SM
+    UART --&gt;|Interrupción RX| SM
+
+    SM --&gt;|Texto| LCD
+    SM --&gt;|PWM| Servo
+    SM --&gt;|Logs| UART
+</div>
+<hr />
+<h2>2. Máquina de Estados (State Machine)</h2>
+<p>El núcleo del sistema es <code>state_machine.c</code>. Controla el flujo lógico para garantizar que la cerradura solo se abra bajo las condiciones correctas.</p>
+<h3>Diagrama de Estados</h3>
+<div class="mermaid">stateDiagram-v2
+    [*] --&gt; IDLE
+
+    IDLE --&gt; INPUT_CODE: Tecla Presionada (0-9)
+    IDLE --&gt; CHANGE_PWD_AUTH: Tecla 'A'
+    IDLE --&gt; ACCESS_GRANTED: Tarjeta RFID Válida / Comando UART 'U'
+    IDLE --&gt; ACCESS_DENIED: Tarjeta RFID Inválida
+
+    INPUT_CODE --&gt; CHECK_CODE: Código Completo (4 dígitos)
+    INPUT_CODE --&gt; IDLE: Timeout (10s)
+
+    CHECK_CODE --&gt; ACCESS_GRANTED: Contraseña Correcta
+    CHECK_CODE --&gt; ACCESS_DENIED: Contraseña Incorrecta
+    CHECK_CODE --&gt; BLOCKED: 3 Intentos Fallidos
+
+    ACCESS_GRANTED --&gt; IDLE: Tiempo de Apertura (5s)
+
+    ACCESS_DENIED --&gt; IDLE: Tiempo de Espera (2s)
+
+    BLOCKED --&gt; IDLE: Tiempo de Bloqueo (30s)
+
+    CHANGE_PWD_AUTH --&gt; CHANGE_PWD_NEW: Contraseña Antigua Correcta
+    CHANGE_PWD_AUTH --&gt; ACCESS_DENIED: Contraseña Antigua Incorrecta
+
+    CHANGE_PWD_NEW --&gt; CHANGE_PWD_CONFIRM: Nueva Contraseña Ingresada
+
+    CHANGE_PWD_CONFIRM --&gt; IDLE: Confirmación
+</div>
+<h3>Descripción de Estados</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: left;">Estado</th>
+<th style="text-align: left;">Descripción</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: left;"><strong>STATE_IDLE</strong></td>
+<td style="text-align: left;">Estado de reposo. Espera una tecla, una tarjeta RFID o un comando UART. El servo está cerrado.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>STATE_INPUT_CODE</strong></td>
+<td style="text-align: left;">El usuario está ingresando la contraseña dígito a dígito. Tiene un timeout de 10s.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>STATE_CHECK_CODE</strong></td>
+<td style="text-align: left;">Verifica si la contraseña ingresada coincide con la guardada.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>STATE_ACCESS_GRANTED</strong></td>
+<td style="text-align: left;">Abre el servo, muestra "ABIERTO" y espera 5 segundos antes de cerrar automáticamente.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>STATE_ACCESS_DENIED</strong></td>
+<td style="text-align: left;">Muestra "Acceso Denegado" y cuenta los intentos fallidos.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>STATE_BLOCKED</strong></td>
+<td style="text-align: left;">Bloquea el sistema por 30 segundos si hay 3 intentos fallidos consecutivos. Ignora el teclado.</td>
+</tr>
+<tr>
+<td style="text-align: left;"><strong>STATE_CHANGE_PWD_</strong>*</td>
+<td style="text-align: left;">Secuencia de estados para cambiar la contraseña (Autenticación -&gt; Nueva Clave -&gt; Confirmación).</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2>3. Explicación de Drivers</h2>
+<h3>3.1. Teclado Matricial 4x4 (<code>keypad.c</code>)</h3>
+<p>Este driver utiliza una técnica híbrida de <strong>Interrupciones Externas (EXTI)</strong> y <strong>Escaneo por Timer</strong> para ser eficiente y responsivo.</p>
+<ul>
+<li><strong>Funcionamiento:</strong><ol>
+<li><strong>Reposo:</strong> Todas las columnas se ponen en BAJO (Activas). Las filas se configuran como entradas con interrupción (EXTI) en flanco de bajada.</li>
+<li><strong>Detección:</strong> Cuando se presiona una tecla, se genera una interrupción EXTI en la fila correspondiente.</li>
+<li><strong>Identificación:</strong> El sistema sabe qué fila generó la interrupción. El Timer (TIM11) está ciclando constantemente las columnas (poniendo una en BAJO y las demás en ALTO) para determinar cuál columna está activa en ese momento exacto.</li>
+<li><strong>Cruce:</strong> La intersección de la Fila (EXTI) y la Columna actual (Timer) determina la tecla exacta.</li>
+<li><strong>Debounce:</strong> Se implementa un filtro de tiempo (200ms) para evitar rebotes mecánicos.</li>
+</ol>
+</li>
+</ul>
+<h3>3.2. Servo Motor (<code>servo_lock.c</code>)</h3>
+<p>Controla el servomotor utilizando <strong>PWM (Modulación por Ancho de Pulso)</strong>.</p>
+<ul>
+<li><strong>Timer:</strong> Usa <code>TIM3</code> canal 1.</li>
+<li><strong>Lógica:</strong><ul>
+<li>Un pulso de ~0.5ms a 1ms mueve el servo a 0° (Cerrado).</li>
+<li>Un pulso de ~2ms a 2.5ms mueve el servo a 180° (Abierto).</li>
+<li>La función <code>Servo_SetAngle</code> convierte un ángulo (0-180) en el valor de registro <code>CCR</code> del timer.</li>
+</ul>
+</li>
+</ul>
+<h3>3.3. RFID RC522 (<code>rc522.c</code>)</h3>
+<p>Permite la lectura de tarjetas de proximidad (NFC/RFID) a 13.56 MHz.</p>
+<ul>
+<li><strong>Comunicación:</strong> Utiliza el protocolo <strong>SPI</strong> (SPI1) para comunicarse con el módulo RC522.</li>
+<li><strong>Proceso de Lectura (<code>SM_CheckCard</code>):</strong><ol>
+<li><code>Request</code>: Pregunta si hay alguna tarjeta en el campo.</li>
+<li><code>Anticoll</code>: Si hay tarjeta, lee su Identificador Único (UID) de 4 bytes.</li>
+<li><strong>Verificación:</strong> Compara el UID leído con un UID autorizado hardcodeado (<code>DE AD BE EF</code>).</li>
+</ol>
+</li>
+</ul>
+<h3>3.4. LCD I2C (<code>LiquidCrystal_I2C.c</code>)</h3>
+<p>Pantalla LCD 20x4 conectada vía I2C para minimizar el uso de pines.</p>
+<ul>
+<li><strong>Comunicación:</strong> Usa el periférico I2C1. Envía comandos y datos para controlar el cursor y escribir texto.</li>
+</ul>
+<hr />
+<h2>4. Análisis de Mejoras (Gap Analysis)</h2>
+<p>Para convertir este prototipo en un producto robusto y comercial, se identifican las siguientes áreas de mejora:</p>
+<h3>4.1. Gestión de Credenciales (CRÍTICO)</h3>
+<ul>
+<li><strong>Persistencia:</strong> Actualmente, la contraseña (<code>savedPassword</code>) se guarda en una variable RAM. <strong>Si se apaga la energía, la contraseña vuelve a ser "1234".</strong><ul>
+<li><em>Solución:</em> Guardar la contraseña en la memoria <strong>Flash</strong> interna del STM32 o en una <strong>EEPROM</strong> externa para que persista tras reinicios.</li>
+</ul>
+</li>
+<li><strong>Gestión de Tarjetas RFID:</strong> El UID autorizado está "quemado" en el código (<code>AUTHORIZED_UID</code>). No se pueden agregar ni quitar tarjetas sin reprogramar el chip.<ul>
+<li><em>Solución:</em> Crear un "Modo Admin" que permita escanear una tarjeta nueva y guardarla en una lista de tarjetas autorizadas en memoria persistente.</li>
+</ul>
+</li>
+</ul>
+<h3>4.2. Seguridad</h3>
+<ul>
+<li><strong>Cifrado:</strong> La comunicación UART es texto plano. Cualquiera conectado a los pines TX/RX puede ver la contraseña o enviar 'U' para abrir.</li>
+<li><strong>Sensor de Puerta:</strong> El sistema asume que la puerta se cerró tras 5 segundos. No sabe si realmente está cerrada.<ul>
+<li><em>Mejora:</em> Agregar un sensor magnético (Reed Switch) para saber si la puerta está físicamente abierta o cerrada y alertar si se dejó abierta.</li>
+</ul>
+</li>
+</ul>
+<h3>4.3. Funcionalidades Faltantes en Código</h3>
+<ul>
+<li><strong>Comando 'L' (Lock) en UART:</strong> La función <code>SM_ProcessUART</code> tiene el caso <code>case 'L':</code> vacío. Debería forzar el cierre del servo o cambiar al estado IDLE inmediatamente.</li>
+<li><strong>Watchdog:</strong> Implementar un Watchdog Timer (WWDG/IWDG) para reiniciar el sistema automáticamente si se bloquea por ruido eléctrico o errores de software.</li>
+</ul>
+</body>
+</html>
