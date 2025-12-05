@@ -1,6 +1,7 @@
 #include "state_machine.h"
 #include "main.h"
 #include "rc522.h"
+#include "stm32f4xx_hal.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -61,7 +62,7 @@ void SM_Init(LiquidCrystal_I2C_t *lcd, Keypad_t *keypad, Servo_t *servo,
                  "Teclas: 0-9, A-D\r\n"
                  "Cmds: 'U'Abrir, 'C'Cerrar\r\n"
                  "-----------------------\r\n";
-    HAL_UART_Transmit(uartHandle, (uint8_t *)menu, strlen(menu), 1000);
+    HAL_UART_Transmit(uartHandle, (uint8_t *)menu, strlen(menu), 100);
   }
 
   TransitionTo(STATE_IDLE);
@@ -105,18 +106,13 @@ void SM_Run(void) {
       // Check if open too long (e.g., 15 seconds)
       if ((HAL_GetTick() - doorOpenTime > 15000) && !alertShown) {
         SM_Clear();
-        SM_Print("PUERTA ABIERTA!");
+        SM_Print("ABIERTO");
         alertShown = true;
       }
     } else {
       // Door is physically CLOSED
       doorOpenTime = 0; // Reset open timer
       alertShown = false;
-
-      // Wait a small delay to ensure it's fully closed before locking
-      if (elapsed > 1000) {
-        TransitionTo(STATE_IDLE);
-      }
     }
     break;
 
@@ -402,6 +398,4 @@ static bool SM_IsDoorOpen(void) {
   // If pin is High (Pull-up), switch is open -> Door Open
   // If pin is Low (Grounded), switch is closed -> Door Closed
   return (HAL_GPIO_ReadPin(REED_SW_PORT, REED_SW_PIN) == GPIO_PIN_SET);
-
-
 }
